@@ -1,0 +1,14 @@
+services:
+  - type: cron
+    name: bot-tenis-v6
+    runtime: python
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "python bot_tenis_v6.py"
+    schedule: "*/30 * * * *"
+    envVars:
+      - key: ODDS_API_KEY
+        sync: false
+      - key: TELEGRAM_TOKEN
+        sync: false
+      - key: TELEGRAM_CHAT_ID
+        sync: false
