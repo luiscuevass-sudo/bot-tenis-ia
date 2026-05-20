@@ -14,7 +14,8 @@
 # ✅ Configuración centralizada via dataclasses
 # ✅ Todas las superficies (no solo Grand Slams)
 # ============================================================
- 
+import threading
+from flask import Flask 
 import os
 import re
 import csv
@@ -39,13 +40,13 @@ from logging.handlers import RotatingFileHandler
 @dataclass
 class Config:
     odds_api_key: str = field(
-        default_factory=lambda: os.environ.get("3c0a4810b1577ab230a1c8211247ce4d", "")
+        default_factory=lambda: os.environ.get("ODDS_API_KEY", "")
     )
     telegram_token: str = field(
-        default_factory=lambda: os.environ.get("8982474148:AAGcSfZPJW-D791uQ8M9CFYUIBAe74a2vVE", "")
+        default_factory=lambda: os.environ.get("TELEGRAM_TOKEN", "")
     )
     telegram_chat_id: str = field(
-        default_factory=lambda: os.environ.get("8588903909", "")
+        default_factory=lambda: os.environ.get("TELEGRAM_CHAT_ID", "")
     )
  
     modelo_path: str = "modelo_tenis_v5.pkl"
@@ -607,8 +608,32 @@ class BotTenis:
         log.info("✅ Análisis completado")
  
 # ============================================================
-# MAIN
 # ============================================================
- 
+# SERVIDOR PARA RENDER Y MOTOR PRINCIPAL
+# ============================================================
+
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return "Bot Tenis v6.0 activo."
+
+def run_web():
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host='0.0.0.0', port=port)
+
 if __name__ == "__main__":
-    BotTenis().run()
+    # 1. Iniciar servidor web en segundo plano
+    threading.Thread(target=run_web, daemon=True).start()
+    
+    # 2. Iniciar el bot en un bucle infinito
+    bot = BotTenis()
+    while True:
+        try:
+            log.info("🎾 Iniciando ciclo de análisis...")
+            bot.run()
+        except Exception as e:
+            log.error(f"Error crítico en el bucle: {e}")
+        
+        log.info("Esperando 30 minutos para el próximo análisis...")
+        time.sleep(1800) # 1800 segundos = 30 minutos
