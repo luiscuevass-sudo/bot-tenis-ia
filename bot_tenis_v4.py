@@ -354,9 +354,14 @@ class OddsClient:
     def __init__(self, api_key: str = CFG.odds_api_key):
         self._key = api_key
  
-    @retry()
+   @retry()
     def _get_odds(self, liga: str) -> list:
-        url = f"{self.BASE_URL}/{liga}/odds/"
+        # Primero definimos la variable limpia
+        liga_limpia = liga.replace(" ", "_")
+        
+        # Ahora sí, la usamos en la URL
+        url = f"{self.BASE_URL}/{liga_limpia}/odds/"
+        
         params = {
             "apiKey": self._key,
             "regions": CFG.regions,
