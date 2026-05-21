@@ -607,6 +607,25 @@ class BotTenis:
             log.error(f"Error analizando {p.get('jugador_a')} vs {p.get('jugador_b')}: {e}")
  
     def run(self):
+        log.info("🎾 Iniciando análisis para selección de TOP 3...")
+        partidos = self.odds.obtener_partidos()
+        if not partidos: return
+
+        resultados_ev = [] # Aquí guardaremos los partidos analizados
+
+        for p in partidos:
+            ev, prob = self.analizar_partido(p) # Tu método debe retornar el EV y Probabilidad
+            if ev > 0: # Solo guardamos si tiene valor positivo
+                resultados_ev.append({'partido': p, 'ev': ev, 'prob': prob})
+        
+        # Ordenar por EV de mayor a menor y tomar los 3 primeros
+        top_3 = sorted(resultados_ev, key=lambda x: x['ev'], reverse=True)[:3]
+        
+        # Enviar solo el top 3
+        for item in top_3:
+            self.enviar_telegram(f"🔥 TOP PICK: {item['partido']} | EV: {item['ev']:.2f}% | Prob: {item['prob']*100:.1f}%")
+        
+        log.info(f"✅ Análisis completado. Se enviaron los {len(top_3)} mejores picks.")def run(self):
         log.info("🎾 BOT TENIS IA v6.0 iniciando…")
         partidos = self.odds.obtener_partidos()
  
