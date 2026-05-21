@@ -69,7 +69,7 @@ class Config:
     rate_limit_delay: float = 1.5  # Segundos entre requests al scraper
  
     # Competiciones
-    ligas: list = field(default_factory=lambda: ["tennis_atp", "tennis_wta"])
+    ligas: list = field(default_factory=lambda: ["tennis_atp_wta"])
     regions: str = "eu"
  
     # Superficies de torneos conocidos
