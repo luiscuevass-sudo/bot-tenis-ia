@@ -3,7 +3,7 @@ services:
     name: bot-tenis-v6
     runtime: python
     buildCommand: "pip install -r requirements.txt"
-    startCommand: "python bot_tenis_v6.py"
+    startCommand: "python bot_tenis_v4.py"
     schedule: "*/30 * * * *"
     envVars:
       - key: ODDS_API_KEY
