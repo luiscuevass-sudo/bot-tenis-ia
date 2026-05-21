@@ -606,7 +606,7 @@ class BotTenis:
         except Exception as e:
             log.error(f"Error analizando {p.get('jugador_a')} vs {p.get('jugador_b')}: {e}")
  
-     def run(self):
+    def run(self):
         log.info("🎾 BOT TENIS IA v6.0 iniciando…")
         partidos = self.odds.obtener_partidos()
 
