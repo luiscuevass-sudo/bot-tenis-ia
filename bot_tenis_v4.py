@@ -69,7 +69,12 @@ class Config:
     rate_limit_delay: float = 1.5  # Segundos entre requests al scraper
  
     # Competiciones
-    ligas: list = field(default_factory=lambda: ["tennis_atp_wta"])
+    ligas: list = field(default_factory=lambda: [
+        "tennis_atp_french_open", 
+        "tennis_atp_hamburg_open", 
+        "tennis_wta_french_open", 
+        "tennis_wta_strasbourg"
+    ])
     regions: str = "eu"
  
     # Superficies de torneos conocidos
@@ -292,7 +297,7 @@ def extraer_jugador(nombre: str) -> dict:
                     pass
             return default
  
-        stats["elo"]       = buscar(r"ELO[:\s]+(\d+(?:\.\d+)?)", 1500)
+        stats["elo"]     = buscar(r"ELO[:\s]+(\d+(?:\.\d+)?)", 1500)
         stats["elo_hard"]  = buscar(r"Hard\s+ELO[:\s]+(\d+(?:\.\d+)?)", stats["elo"])
         stats["elo_clay"]  = buscar(r"Clay\s+ELO[:\s]+(\d+(?:\.\d+)?)", stats["elo"])
         stats["elo_grass"] = buscar(r"Grass\s+ELO[:\s]+(\d+(?:\.\d+)?)", stats["elo"])
@@ -446,17 +451,17 @@ def construir_features(
     elo_b = b.get(f"elo_{surface}", b["elo"])
  
     features = {
-        "delta_elo":          a["elo"] - b["elo"],
-        "delta_elo_surface":  elo_a - elo_b,
-        "delta_hold":         a["hold_pct"] - b["hold_pct"],
-        "delta_break":        a["break_pct"] - b["break_pct"],
-        "delta_dr":           a["dr"] - b["dr"],
-        "delta_forma":        a["forma_10"] - b["forma_10"],
-        "delta_streak":       a["streak"] - b["streak"],
-        "delta_tb":           a["tb_win_pct"] - b["tb_win_pct"],
-        "delta_h2h":          a["h2h_vs_rival"] - b["h2h_vs_rival"],
-        "delta_rank":         b["ranking"] - a["ranking"],
-        "delta_fatiga":       b["matches_last_7d"] - a["matches_last_7d"],
+        "delta_elo":           a["elo"] - b["elo"],
+        "delta_elo_surface":   elo_a - elo_b,
+        "delta_hold":          a["hold_pct"] - b["hold_pct"],
+        "delta_break":         a["break_pct"] - b["break_pct"],
+        "delta_dr":            a["dr"] - b["dr"],
+        "delta_forma":         a["forma_10"] - b["forma_10"],
+        "delta_streak":        a["streak"] - b["streak"],
+        "delta_tb":            a["tb_win_pct"] - b["tb_win_pct"],
+        "delta_h2h":           a["h2h_vs_rival"] - b["h2h_vs_rival"],
+        "delta_rank":          b["ranking"] - a["ranking"],
+        "delta_fatiga":        b["matches_last_7d"] - a["matches_last_7d"],
         "delta_market_prob":  prob_implicita(cuota_a) - prob_implicita(cuota_b),
         "surface":            SURFACE_MAP.get(surface, 0),
     }
@@ -523,7 +528,7 @@ def formatear_mensaje(p: dict, jugador: str, cuota_casa: float, cuota_justa: flo
         f"🎯 {p['jugador_a']} vs {p['jugador_b']}\n"
         f"🌍 Superficie: `{p['surface'].capitalize()}`\n"
         f"━━━━━━━━━━━━━━━━━━━\n"
-        f"🔥 PICK: *{jugador.upper()}*  {estrellas}\n"
+        f"🔥 PICK: *{jugador.upper()}* {estrellas}\n"
         f"💰 Cuota Casa: `{cuota_casa}`\n"
         f"📐 Cuota IA: `{cuota_justa}`\n"
         f"📈 Probabilidad IA: `{round(prob * 100, 1)}%`\n"
@@ -539,8 +544,8 @@ def formatear_mensaje(p: dict, jugador: str, cuota_casa: float, cuota_justa: flo
  
 class BotTenis:
     def __init__(self):
-        self.modelo    = ModeloIA()
-        self.odds      = OddsClient()
+        self.modelo   = ModeloIA()
+        self.odds     = OddsClient()
         self.telegram  = TelegramNotifier()
         self.picks_log = PicksLogger()
  
@@ -616,17 +621,17 @@ class BotTenis:
 # ============================================================
 # SERVIDOR PARA RENDER Y MOTOR PRINCIPAL
 # ============================================================
-
+ 
 app = Flask(__name__)
-
+ 
 @app.route('/')
 def home():
     return "Bot Tenis v6.0 activo."
-
+ 
 def run_web():
     port = int(os.environ.get("PORT", 8080))
     app.run(host='0.0.0.0', port=port)
-
+ 
 if __name__ == "__main__":
     # 1. Iniciar servidor web en segundo plano
     threading.Thread(target=run_web, daemon=True).start()
