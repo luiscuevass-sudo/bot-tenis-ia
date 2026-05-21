@@ -668,3 +668,28 @@ class BotTenis:
             self.telegram.enviar(mensaje)
 
         log.info("✅ Análisis completado")
+
+
+# ============================================================
+# APP WEB (Para mantener el bot vivo en Render)
+# ============================================================
+app = Flask(__name__)
+
+@app.route('/')
+def index():
+    return "Bot Tenis IA está corriendo..."
+
+def ejecutar_bot():
+    bot = BotTenis()
+    while True:
+        bot.run()
+        log.info("Esperando 12 horas para el próximo ciclo...")
+        time.sleep(12 * 60 * 60) # Pausa larga para no saturar la API
+
+if __name__ == '__main__':
+    # Arrancar el bot en un hilo separado para que no bloquee el servidor Flask
+    threading.Thread(target=ejecutar_bot, daemon=True).start()
+    
+    # Iniciar servidor Flask
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port)
