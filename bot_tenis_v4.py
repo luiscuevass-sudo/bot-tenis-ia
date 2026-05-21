@@ -20,6 +20,7 @@ import os
 import re
 import csv
 import time
+import random
 import logging
 import pickle
 import hashlib
@@ -241,10 +242,31 @@ class ModeloIA:
 # SCRAPER DE JUGADORES
 # ============================================================
  
-HEADERS_HTTP = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-    "Accept-Language": "es-ES,es;q=0.8,en-US;q=0.5,en;q=0.3",
-    "Referer": "https://www.google.com/"}
+_USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:125.0) Gecko/20100101 Firefox/125.0",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+]
+ 
+def _get_headers() -> dict:
+    """Devuelve headers aleatorios para evitar detección de bot."""
+    return {
+        "User-Agent": random.choice(_USER_AGENTS),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9,es;q=0.8",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Connection": "keep-alive",
+        "Upgrade-Insecure-Requests": "1",
+        "Sec-Fetch-Dest": "document",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "none",
+        "Sec-Fetch-User": "?1",
+        "Cache-Control": "max-age=0",
+        "Referer": "https://www.google.com/",
+    }
 SURFACE_MAP = {"hard": 0, "clay": 1, "grass": 2}
  
 STATS_DEFAULT = {
@@ -266,10 +288,21 @@ STATS_DEFAULT = {
  
 @retry()
 def _fetch(url: str, params: dict = None) -> requests.Response:
-    return requests.get(
-        url, headers=HEADERS_HTTP, params=params,
+    # Delay aleatorio para no ser detectado como bot
+    time.sleep(random.uniform(1.0, 3.0))
+    res = requests.get(
+        url, headers=_get_headers(), params=params,
         timeout=CFG.request_timeout
     )
+    if res.status_code == 403:
+        wait = random.uniform(10.0, 20.0)
+        log.warning(f"403 recibido de {url}, esperando {wait:.1f}s antes de reintentar…")
+        time.sleep(wait)
+        res = requests.get(
+            url, headers=_get_headers(), params=params,
+            timeout=CFG.request_timeout
+        )
+    return res
  
  
 def extraer_jugador(nombre: str) -> dict:
@@ -336,7 +369,7 @@ def extraer_jugador(nombre: str) -> dict:
         log.error(f"Error scraping {nombre}: {e}")
  
     cache_jugadores.set(nombre, stats)
-    time.sleep(CFG.rate_limit_delay)
+    time.sleep(random.uniform(CFG.rate_limit_delay, CFG.rate_limit_delay + 2.0))
     return stats
  
  
@@ -609,13 +642,13 @@ class BotTenis:
     def run(self):
         log.info("🎾 BOT TENIS IA v6.0 iniciando…")
         partidos = self.odds.obtener_partidos()
-
+ 
         if not partidos:
             log.warning("No se encontraron partidos hoy")
             return
-
+ 
         mejores_predicciones = []
-
+ 
         for p in partidos:
             try:
                 df = construir_features(
@@ -625,14 +658,14 @@ class BotTenis:
                     p["cuota_a"],
                     p["cuota_b"]
                 )
-
+ 
                 prob_a, prob_b = self.modelo.predecir(df)
-
+ 
                 candidatos = [
                     (p["jugador_a"], prob_a),
                     (p["jugador_b"], prob_b),
                 ]
-
+ 
                 for jugador, prob in candidatos:
                     if prob >= CFG.min_prob:
                         mejores_predicciones.append({
@@ -641,22 +674,22 @@ class BotTenis:
                             "prob": prob,
                             "torneo": p["torneo"]
                         })
-
+ 
                 time.sleep(CFG.rate_limit_delay)
-
+ 
             except Exception as e:
                 log.error(f"Error analizando partido: {e}")
-
+ 
         # Ordenar por probabilidad más alta
         top_3 = sorted(
             mejores_predicciones,
             key=lambda x: x["prob"],
             reverse=True
         )[:3]
-
+ 
         if top_3:
             mensaje = "🎾 TOP 3 PREDICCIONES IA\n\n"
-
+ 
             for i, pick in enumerate(top_3, 1):
                 mensaje += (
                     f"{i}. {pick['jugador']}\n"
@@ -664,28 +697,28 @@ class BotTenis:
                     f"🏆 {pick['torneo']}\n"
                     f"🧠 Confianza IA: {pick['prob']*100:.1f}%\n\n"
                 )
-
+ 
             self.telegram.enviar(mensaje)
-
+ 
         log.info("✅ Análisis completado")
-
-
+ 
+ 
 # ============================================================
 # APP WEB (Para mantener el bot vivo en Render)
 # ============================================================
 app = Flask(__name__)
-
+ 
 @app.route('/')
 def index():
     return "Bot Tenis IA está corriendo..."
-
+ 
 def ejecutar_bot():
     bot = BotTenis()
     while True:
         bot.run()
         log.info("Esperando 12 horas para el próximo ciclo...")
         time.sleep(12 * 60 * 60) # Pausa larga para no saturar la API
-
+ 
 if __name__ == '__main__':
     # Arrancar el bot en un hilo separado para que no bloquee el servidor Flask
     threading.Thread(target=ejecutar_bot, daemon=True).start()
