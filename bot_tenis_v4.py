@@ -354,7 +354,7 @@ class OddsClient:
     def __init__(self, api_key: str = CFG.odds_api_key):
         self._key = api_key
  
-   @retry()
+    @retry()
     def _get_odds(self, liga: str) -> list:
         # Primero definimos la variable limpia
         liga_limpia = liga.replace(" ", "_")
