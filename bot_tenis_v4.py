@@ -606,65 +606,65 @@ class BotTenis:
         except Exception as e:
             log.error(f"Error analizando {p.get('jugador_a')} vs {p.get('jugador_b')}: {e}")
  
-    def run(self):
-    log.info("🎾 BOT TENIS IA v6.0 iniciando…")
-    partidos = self.odds.obtener_partidos()
+        def run(self):
+        log.info("🎾 BOT TENIS IA v6.0 iniciando…")
+        partidos = self.odds.obtener_partidos()
 
-    if not partidos:
-        log.warning("No se encontraron partidos hoy")
-        return
+        if not partidos:
+            log.warning("No se encontraron partidos hoy")
+            return
 
-    mejores_predicciones = []
+        mejores_predicciones = []
 
-    for p in partidos:
-        try:
-            df = construir_features(
-                p["jugador_a"],
-                p["jugador_b"],
-                p["surface"],
-                p["cuota_a"],
-                p["cuota_b"]
-            )
+        for p in partidos:
+            try:
+                df = construir_features(
+                    p["jugador_a"],
+                    p["jugador_b"],
+                    p["surface"],
+                    p["cuota_a"],
+                    p["cuota_b"]
+                )
 
-            prob_a, prob_b = self.modelo.predecir(df)
+                prob_a, prob_b = self.modelo.predecir(df)
 
-            candidatos = [
-                (p["jugador_a"], prob_a),
-                (p["jugador_b"], prob_b),
-            ]
+                candidatos = [
+                    (p["jugador_a"], prob_a),
+                    (p["jugador_b"], prob_b),
+                ]
 
-            for jugador, prob in candidatos:
-                if prob >= CFG.min_prob:
-                    mejores_predicciones.append({
-                        "partido": f"{p['jugador_a']} vs {p['jugador_b']}",
-                        "jugador": jugador,
-                        "prob": prob,
-                        "torneo": p["torneo"]
-                    })
+                for jugador, prob in candidatos:
+                    if prob >= CFG.min_prob:
+                        mejores_predicciones.append({
+                            "partido": f"{p['jugador_a']} vs {p['jugador_b']}",
+                            "jugador": jugador,
+                            "prob": prob,
+                            "torneo": p["torneo"]
+                        })
 
-            time.sleep(CFG.rate_limit_delay)
+                time.sleep(CFG.rate_limit_delay)
 
-        except Exception as e:
-            log.error(f"Error analizando partido: {e}")
+            except Exception as e:
+                log.error(f"Error analizando partido: {e}")
 
-    # Ordenar por probabilidad más alta
-    top_3 = sorted(
-        mejores_predicciones,
-        key=lambda x: x["prob"],
-        reverse=True
-    )[:3]
+        # Ordenar por probabilidad más alta
+        top_3 = sorted(
+            mejores_predicciones,
+            key=lambda x: x["prob"],
+            reverse=True
+        )[:3]
 
-    if top_3:
-        mensaje = "🎾 TOP 3 PREDICCIONES IA\n\n"
+        if top_3:
+            mensaje = "🎾 TOP 3 PREDICCIONES IA\n\n"
 
-        for i, pick in enumerate(top_3, 1):
-            mensaje += (
-                f"{i}. {pick['jugador']}\n"
-                f"📍 {pick['partido']}\n"
-                f"🏆 {pick['torneo']}\n"
-                f"🧠 Confianza IA: {pick['prob']*100:.1f}%\n\n"
-            )
+            for i, pick in enumerate(top_3, 1):
+                mensaje += (
+                    f"{i}. {pick['jugador']}\n"
+                    f"📍 {pick['partido']}\n"
+                    f"🏆 {pick['torneo']}\n"
+                    f"🧠 Confianza IA: {pick['prob']*100:.1f}%\n\n"
+                )
 
-        self.telegram.enviar(mensaje)
+            self.telegram.enviar(mensaje)
 
-    log.info("✅ Análisis completado")
+        log.info("✅ Análisis completado")
