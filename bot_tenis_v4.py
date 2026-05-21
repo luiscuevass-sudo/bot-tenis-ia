@@ -566,7 +566,11 @@ class BotTenis:
             log.warning("No se encontraron partidos hoy")
             return
  
-        mejores_predicciones = []
+        candidatos_ev = []
+ 
+        # Rango de cuotas objetivo: valor real con riesgo controlado
+        CUOTA_MIN = 1.50
+        CUOTA_MAX = 1.80
  
         for p in partidos:
             try:
@@ -581,67 +585,62 @@ class BotTenis:
                 prob_a, prob_b = self.modelo.predecir(df)
  
                 candidatos = [
-                    (p["jugador_a"], prob_a),
-                    (p["jugador_b"], prob_b),
+                    (p["jugador_a"], p["cuota_a"], prob_a),
+                    (p["jugador_b"], p["cuota_b"], prob_b),
                 ]
  
-                for jugador, prob in candidatos:
-                    if prob >= CFG.min_prob:
-                        mejores_predicciones.append({
-                            "partido": f"{p['jugador_a']} vs {p['jugador_b']}",
-                            "jugador": jugador,
-                            "prob": prob,
-                            "torneo": p["torneo"]
-                        })
+                for jugador, cuota, prob in candidatos:
+                    # Filtrar solo cuotas en el rango 1.50–1.80
+                    if not (CUOTA_MIN <= cuota <= CUOTA_MAX):
+                        continue
+                    if prob < CFG.min_prob:
+                        continue
  
-                time.sleep(CFG.rate_limit_delay)
+                    # EV = prob * cuota - 1  (ganancia esperada por unidad)
+                    ev = round(prob * cuota - 1, 4)
+                    if ev <= 0:
+                        continue
+ 
+                    cuota_justa = round(1 / prob, 2)
+                    edge = round((cuota / cuota_justa - 1) * 100, 1)
+ 
+                    candidatos_ev.append({
+                        "partido":     f"{p['jugador_a']} vs {p['jugador_b']}",
+                        "jugador":     jugador,
+                        "cuota":       cuota,
+                        "prob":        prob,
+                        "ev":          ev,
+                        "edge":        edge,
+                        "torneo":      p["torneo"],
+                        "tour":        p["tour"],
+                        "surface":     p["surface"],
+                    })
  
             except Exception as e:
                 log.error(f"Error analizando partido: {e}")
  
-        # Ordenar por probabilidad más alta
-        top_3 = sorted(
-            mejores_predicciones,
-            key=lambda x: x["prob"],
-            reverse=True
-        )[:3]
+        # Ordenar por EV descendente y tomar top 3
+        top_3 = sorted(candidatos_ev, key=lambda x: x["ev"], reverse=True)[:3]
  
         if top_3:
-            mensaje = "🎾 TOP 3 PREDICCIONES IA\n\n"
- 
+            linea = "━━━━━━━━━━━━━━━━━━━"
+            msg_parts = ["🎾 *TOP 3 VALUE PICKS IA*", linea, ""]
             for i, pick in enumerate(top_3, 1):
-                mensaje += (
-                    f"{i}. {pick['jugador']}\n"
-                    f"📍 {pick['partido']}\n"
-                    f"🏆 {pick['torneo']}\n"
-                    f"🧠 Confianza IA: {pick['prob']*100:.1f}%\n\n"
-                )
- 
-            self.telegram.enviar(mensaje)
+                msg_parts.append(f"*{i}. {pick['jugador'].upper()}*")
+                msg_parts.append(f"📍 {pick['partido']}")
+                msg_parts.append(f"🏆 {pick['torneo']} ({pick['tour']})")
+                msg_parts.append(f"🌍 Superficie: {pick['surface'].capitalize()}")
+                msg_parts.append(f"💰 Cuota: `{pick['cuota']}`")
+                msg_parts.append(f"🧠 Confianza IA: `{pick['prob']*100:.1f}%`")
+                msg_parts.append(f"⚡ Edge: `+{pick['edge']}%`")
+                msg_parts.append(f"📈 EV: `+{pick['ev']*100:.1f}%`")
+                msg_parts.append("")
+            msg_parts.append(linea)
+            msg_parts.append("🤖 XGBoost · Cuotas 1.50–1.80 · Mayor EV")
+            self.telegram.enviar("\n".join(msg_parts))
+            log.info("✅ TOP 3 EV enviado a Telegram")
+        else:
+            log.warning("No hay picks con EV positivo en rango 1.50–1.80")
+            self.telegram.enviar("🎾 *BOT TENIS IA*\n\nHoy no hay picks con EV positivo en el rango 1.50–1.80. Se revisará en el próximo ciclo.")
  
         log.info("✅ Análisis completado")
- 
- 
-# ============================================================
-# APP WEB (Para mantener el bot vivo en Render)
-# ============================================================
-app = Flask(__name__)
- 
-@app.route('/')
-def index():
-    return "Bot Tenis IA está corriendo..."
- 
-def ejecutar_bot():
-    bot = BotTenis()
-    while True:
-        bot.run()
-        log.info("Esperando 12 horas para el próximo ciclo...")
-        time.sleep(12 * 60 * 60) # Pausa larga para no saturar la API
- 
-if __name__ == '__main__':
-    # Arrancar el bot en un hilo separado para que no bloquee el servidor Flask
-    threading.Thread(target=ejecutar_bot, daemon=True).start()
-    
-    # Iniciar servidor Flask
-    port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port)
