@@ -616,7 +616,7 @@ class BotTenis:
                     prob, edge, kelly_pct, stake
                 )
  
-                #self.telegram.enviar(mensaje)
+                self.telegram.enviar(mensaje)
  
                 pick_data = {
                     "timestamp":      datetime.now().isoformat(),
