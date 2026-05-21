@@ -244,9 +244,9 @@ class ModeloIA:
 # simétricos, el feature dominante pasa a ser delta_market_prob
 # (derivado de las cuotas reales), que es la señal más fiable.
 # ============================================================
- 
+
 SURFACE_MAP = {"hard": 0, "clay": 1, "grass": 2}
- 
+
 STATS_DEFAULT = {
     "elo": 1500,
     "elo_hard": 1500,
@@ -262,8 +262,8 @@ STATS_DEFAULT = {
     "matches_last_7d": 0,
     "h2h_vs_rival": 0,
 }
- 
- 
+
+
 def extraer_jugador(nombre: str) -> dict:
     """Devuelve stats neutros. El modelo usa principalmente
     delta_market_prob derivado de las cuotas reales del mercado."""
@@ -274,8 +274,8 @@ def extraer_jugador(nombre: str) -> dict:
     cache_jugadores.set(nombre, stats)
     log.debug(f"Stats neutros para {nombre} (scraping desactivado)")
     return stats
- 
- 
+
+
 def calcular_h2h(jugador_a: str, jugador_b: str) -> int:
     """H2H neutro — sin acceso a fuentes externas desde cloud."""
     return 0
@@ -536,13 +536,13 @@ class BotTenis:
     def run(self):
         log.info("🎾 BOT TENIS IA v6.0 iniciando…")
         partidos = self.odds.obtener_partidos()
- 
+
         if not partidos:
             log.warning("No se encontraron partidos hoy")
             return
- 
+
         mejores_predicciones = []
- 
+
         for p in partidos:
             try:
                 df = construir_features(
@@ -552,14 +552,14 @@ class BotTenis:
                     p["cuota_a"],
                     p["cuota_b"]
                 )
- 
+
                 prob_a, prob_b = self.modelo.predecir(df)
- 
+
                 candidatos = [
                     (p["jugador_a"], prob_a),
                     (p["jugador_b"], prob_b),
                 ]
- 
+
                 for jugador, prob in candidatos:
                     if prob >= CFG.min_prob:
                         mejores_predicciones.append({
@@ -568,22 +568,22 @@ class BotTenis:
                             "prob": prob,
                             "torneo": p["torneo"]
                         })
- 
+
                 time.sleep(CFG.rate_limit_delay)
- 
+
             except Exception as e:
                 log.error(f"Error analizando partido: {e}")
- 
+
         # Ordenar por probabilidad más alta
         top_3 = sorted(
             mejores_predicciones,
             key=lambda x: x["prob"],
             reverse=True
         )[:3]
- 
+
         if top_3:
             mensaje = "🎾 TOP 3 PREDICCIONES IA\n\n"
- 
+
             for i, pick in enumerate(top_3, 1):
                 mensaje += (
                     f"{i}. {pick['jugador']}\n"
@@ -591,28 +591,28 @@ class BotTenis:
                     f"🏆 {pick['torneo']}\n"
                     f"🧠 Confianza IA: {pick['prob']*100:.1f}%\n\n"
                 )
- 
+
             self.telegram.enviar(mensaje)
- 
+
         log.info("✅ Análisis completado")
- 
- 
+
+
 # ============================================================
 # APP WEB (Para mantener el bot vivo en Render)
 # ============================================================
 app = Flask(__name__)
- 
+
 @app.route('/')
 def index():
     return "Bot Tenis IA está corriendo..."
- 
+
 def ejecutar_bot():
     bot = BotTenis()
     while True:
         bot.run()
         log.info("Esperando 12 horas para el próximo ciclo...")
         time.sleep(12 * 60 * 60) # Pausa larga para no saturar la API
- 
+
 if __name__ == '__main__':
     # Arrancar el bot en un hilo separado para que no bloquee el servidor Flask
     threading.Thread(target=ejecutar_bot, daemon=True).start()
