@@ -607,65 +607,64 @@ class BotTenis:
             log.error(f"Error analizando {p.get('jugador_a')} vs {p.get('jugador_b')}: {e}")
  
     def run(self):
-        log.info("🎾 Iniciando análisis para selección de TOP 3...")
-        partidos = self.odds.obtener_partidos()
-        if not partidos: return
+    log.info("🎾 BOT TENIS IA v6.0 iniciando…")
+    partidos = self.odds.obtener_partidos()
 
-        resultados_ev = [] # Aquí guardaremos los partidos analizados
+    if not partidos:
+        log.warning("No se encontraron partidos hoy")
+        return
 
-        for p in partidos:
-            ev, prob = self.analizar_partido(p) # Tu método debe retornar el EV y Probabilidad
-            if ev > 0: # Solo guardamos si tiene valor positivo
-                resultados_ev.append({'partido': p, 'ev': ev, 'prob': prob})
-        
-        # Ordenar por EV de mayor a menor y tomar los 3 primeros
-        top_3 = sorted(resultados_ev, key=lambda x: x['ev'], reverse=True)[:3]
-        
-        # Enviar solo el top 3
-        for item in top_3:
-            self.enviar_telegram(f"🔥 TOP PICK: {item['partido']} | EV: {item['ev']:.2f}% | Prob: {item['prob']*100:.1f}%")
-        
-        log.info(f"✅ Análisis completado. Se enviaron los {len(top_3)} mejores picks.")def run(self):
-        log.info("🎾 BOT TENIS IA v6.0 iniciando…")
-        partidos = self.odds.obtener_partidos()
- 
-        if not partidos:
-            log.warning("No se encontraron partidos hoy")
-            return
- 
-        for p in partidos:
-            self.analizar_partido(p)
-            time.sleep(CFG.rate_limit_delay)
- 
-        log.info("✅ Análisis completado")
- 
-# ============================================================
-# ============================================================
-# SERVIDOR PARA RENDER Y MOTOR PRINCIPAL
-# ============================================================
- 
-app = Flask(__name__)
- 
-@app.route('/')
-def home():
-    return "Bot Tenis v6.0 activo."
- 
-def run_web():
-    port = int(os.environ.get("PORT", 8080))
-    app.run(host='0.0.0.0', port=port)
- 
-if __name__ == "__main__":
-    # 1. Iniciar servidor web en segundo plano
-    threading.Thread(target=run_web, daemon=True).start()
-    
-    # 2. Iniciar el bot en un bucle infinito
-    bot = BotTenis()
-    while True:
+    mejores_predicciones = []
+
+    for p in partidos:
         try:
-            log.info("🎾 Iniciando ciclo de análisis...")
-            bot.run()
+            df = construir_features(
+                p["jugador_a"],
+                p["jugador_b"],
+                p["surface"],
+                p["cuota_a"],
+                p["cuota_b"]
+            )
+
+            prob_a, prob_b = self.modelo.predecir(df)
+
+            candidatos = [
+                (p["jugador_a"], prob_a),
+                (p["jugador_b"], prob_b),
+            ]
+
+            for jugador, prob in candidatos:
+                if prob >= CFG.min_prob:
+                    mejores_predicciones.append({
+                        "partido": f"{p['jugador_a']} vs {p['jugador_b']}",
+                        "jugador": jugador,
+                        "prob": prob,
+                        "torneo": p["torneo"]
+                    })
+
+            time.sleep(CFG.rate_limit_delay)
+
         except Exception as e:
-            log.error(f"Error crítico en el bucle: {e}")
-        
-        log.info("Esperando 30 minutos para el próximo análisis...")
-        time.sleep(1800) # 1800 segundos = 30 minutos
+            log.error(f"Error analizando partido: {e}")
+
+    # Ordenar por probabilidad más alta
+    top_3 = sorted(
+        mejores_predicciones,
+        key=lambda x: x["prob"],
+        reverse=True
+    )[:3]
+
+    if top_3:
+        mensaje = "🎾 TOP 3 PREDICCIONES IA\n\n"
+
+        for i, pick in enumerate(top_3, 1):
+            mensaje += (
+                f"{i}. {pick['jugador']}\n"
+                f"📍 {pick['partido']}\n"
+                f"🏆 {pick['torneo']}\n"
+                f"🧠 Confianza IA: {pick['prob']*100:.1f}%\n\n"
+            )
+
+        self.telegram.enviar(mensaje)
+
+    log.info("✅ Análisis completado")
