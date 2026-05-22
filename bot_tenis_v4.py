@@ -52,9 +52,11 @@ class Config:
     picks_log_path: str = "picks_log.csv"
  
     # Umbrales de value betting
-    value_threshold: float = 1.01  # Edge mínimo real: >1% sobre cuota justa
+    value_threshold: float = 0.985 # Captura cuotas cercanas a la justa (margen ~1.5%)
     min_prob: float = 0.52         # Probabilidad mínima para considerar pick
     max_cuota: float = 5.0         # Ignorar cuotas muy altas (ruido)
+    cuota_min: float = 1.40            # Rango mínimo de cuota aceptada
+    cuota_max_pick: float = 2.20       # Rango máximo de cuota aceptada
     kelly_fraccion: float = 0.25   # Kelly fraccionado (conservador)
     bankroll: float = 1000.0       # Bankroll base para Kelly
  
@@ -583,8 +585,8 @@ class BotTenis:
         candidatos_ev = []
  
         # Rango de cuotas objetivo: valor real con riesgo controlado
-        CUOTA_MIN = 1.50
-        CUOTA_MAX = 1.80
+        CUOTA_MIN = CFG.cuota_min       # 1.40
+        CUOTA_MAX = CFG.cuota_max_pick  # 2.20
  
         for p in partidos:
             try:
@@ -614,7 +616,7 @@ class BotTenis:
  
                     # EV = prob * cuota - 1  (ganancia esperada por unidad)
                     ev = round(prob * cuota - 1, 4)
-                    if ev <= 0:
+                    if ev <= -0.025:  # Descartar solo los de peor EV (< -2.5%)
                         continue
  
                     cuota_justa = round(1 / prob, 2)
@@ -652,12 +654,12 @@ class BotTenis:
                 msg_parts.append(f"📈 EV: `+{pick['ev']*100:.1f}%`")
                 msg_parts.append("")
             msg_parts.append(linea)
-            msg_parts.append("🤖 XGBoost · Cuotas 1.50–1.80 · Mayor EV")
+            msg_parts.append("🤖 Cuotas 1.40–2.20 · Menor margen de casa · Mayor EV")
             self.telegram.enviar("\n".join(msg_parts))
             log.info("✅ TOP 3 EV enviado a Telegram")
         else:
             log.warning("No hay picks con EV positivo en rango 1.50–1.80")
-            self.telegram.enviar("🎾 *BOT TENIS IA*\n\nHoy no hay picks con EV positivo en el rango 1.50–1.80. Se revisará en el próximo ciclo.")
+            self.telegram.enviar("🎾 *BOT TENIS IA*\n\nHoy no hay picks con EV positivo en el rango 1.40–2.20. Se revisará en el próximo ciclo.")
  
         log.info("✅ Análisis completado")
  
