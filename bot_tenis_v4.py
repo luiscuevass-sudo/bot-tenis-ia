@@ -52,8 +52,8 @@ class Config:
     picks_log_path: str = "picks_log.csv"
  
     # Umbrales de value betting
-    value_threshold: float = 1.05
-    min_prob: float = 0.50         # Probabilidad mínima para considerar pick
+    value_threshold: float = 1.01  # Edge mínimo real: >1% sobre cuota justa
+    min_prob: float = 0.52         # Probabilidad mínima para considerar pick
     max_cuota: float = 5.0         # Ignorar cuotas muy altas (ruido)
     kelly_fraccion: float = 0.25   # Kelly fraccionado (conservador)
     bankroll: float = 1000.0       # Bankroll base para Kelly
@@ -233,39 +233,32 @@ class ModeloIA:
             log.error(f"❌ Error cargando modelo ({path}): {e}", exc_info=True)
  
     def predecir(self, df: pd.DataFrame) -> Tuple[float, float]:
-        """Retorna (prob_a, prob_b) calibradas con el mercado."""
+        """Retorna (prob_a, prob_b) sin margen de bookmaker.
+        
+        El modelo XGBoost fue entrenado con versiones anteriores de sklearn
+        y devuelve probabilidades extremas (>99%) con features neutros.
+        La fuente de verdad es el mercado sin margen: es la estimación
+        más honesta disponible y el único EV calculable de forma fiable.
+        """
         if self._model is None:
             raise RuntimeError("Modelo no cargado")
         df_feat = df[self.FEATURE_COLUMNS].copy()
         if df_feat.isnull().any().any():
-            log.warning("Features con NaN detectados, imputando con 0")
             df_feat = df_feat.fillna(0)
-        probs = self._model.predict_proba(df_feat)[0]
-        prob_modelo_a = float(probs[1])
-        prob_modelo_b = float(probs[0])
  
-        # Probabilidad implícita del mercado (sin margen)
+        # Recuperar cuotas implícitas del delta_market_prob
+        # delta = prob_implicita(a) - prob_implicita(b)  (con margen)
         delta_mp = float(df_feat["delta_market_prob"].iloc[0])
-        # delta_market_prob = prob_implicita(cuota_a) - prob_implicita(cuota_b)
-        # Recuperamos las probs de mercado sumando/restando el delta
-        # prob_mkt_a + prob_mkt_b = 1  →  prob_mkt_a = 0.5 + delta/2
-        prob_mkt_a = max(0.05, min(0.95, 0.5 + delta_mp / 2))
-        prob_mkt_b = 1.0 - prob_mkt_a
+        pi_a_raw = max(0.01, 0.5 + delta_mp / 2)
+        pi_b_raw = max(0.01, 0.5 - delta_mp / 2)
  
-        # Mezcla 40% modelo / 60% mercado para anclar a valores realistas
-        PESO_MODELO = 0.40
-        PESO_MERCADO = 0.60
-        prob_a = PESO_MODELO * prob_modelo_a + PESO_MERCADO * prob_mkt_a
-        prob_b = PESO_MODELO * prob_modelo_b + PESO_MERCADO * prob_mkt_b
+        # Eliminar el margen del bookmaker (overround)
+        overround = pi_a_raw + pi_b_raw
+        prob_a = round(pi_a_raw / overround, 4)
+        prob_b = round(pi_b_raw / overround, 4)
  
-        # Normalizar para que sumen 1
-        total = prob_a + prob_b
-        prob_a = round(prob_a / total, 4)
-        prob_b = round(prob_b / total, 4)
- 
-        log.debug(f"Modelo: {prob_modelo_a:.3f}/{prob_modelo_b:.3f} | "
-                  f"Mercado: {prob_mkt_a:.3f}/{prob_mkt_b:.3f} | "
-                  f"Final: {prob_a:.3f}/{prob_b:.3f}")
+        log.debug(f"Prob mercado sin margen: A={prob_a:.3f} B={prob_b:.3f} "
+                  f"(overround eliminado: {overround:.4f})")
         return prob_a, prob_b
  
 # ============================================================
@@ -512,11 +505,15 @@ class BotTenis:
         self.picks_log = PicksLogger()
  
     def _prob_mercado(self, cuota_a: float, cuota_b: float):
-        """Probabilidades normalizadas directamente de las cuotas."""
-        p_a = 1 / cuota_a
-        p_b = 1 / cuota_b
-        total = p_a + p_b
-        return round(p_a / total, 4), round(p_b / total, 4)
+        """Probabilidades de mercado con margen del bookmaker eliminado."""
+        pi_a = 1 / cuota_a
+        pi_b = 1 / cuota_b
+        overround = pi_a + pi_b  # típicamente 1.03–1.08
+        prob_a = round(pi_a / overround, 4)
+        prob_b = round(pi_b / overround, 4)
+        log.debug(f"Prob sin margen: A={prob_a:.3f} B={prob_b:.3f} "
+                  f"(overround={overround:.4f})")
+        return prob_a, prob_b
  
     def analizar_partido(self, p: dict):
         try:
