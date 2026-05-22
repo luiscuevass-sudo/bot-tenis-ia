@@ -29,7 +29,7 @@ import pandas as pd
 from datetime import datetime, timedelta
 from dataclasses import dataclass, field
 from functools import wraps
-from typing import Optional
+from typing import Optional, Tuple
 from logging.handlers import RotatingFileHandler
  
 # ============================================================
@@ -221,14 +221,21 @@ class ModeloIA:
     ]
  
     def __init__(self, path: str = CFG.modelo_path):
+        self._model = None
         if not os.path.exists(path):
-            raise FileNotFoundError(f"❌ Modelo no encontrado: {path}")
-        with open(path, "rb") as f:
-            self._model = pickle.load(f)
-        log.info(f"✅ Modelo cargado desde {path}")
+            log.error(f"❌ Modelo no encontrado: {path}")
+            return
+        try:
+            with open(path, "rb") as f:
+                self._model = pickle.load(f)
+            log.info(f"✅ Modelo cargado desde {path}")
+        except Exception as e:
+            log.error(f"❌ Error cargando modelo ({path}): {e}", exc_info=True)
  
-    def predecir(self, df: pd.DataFrame) -> tuple[float, float]:
+    def predecir(self, df: pd.DataFrame) -> Tuple[float, float]:
         """Retorna (prob_a, prob_b) calibradas con el mercado."""
+        if self._model is None:
+            raise RuntimeError("Modelo no cargado")
         df_feat = df[self.FEATURE_COLUMNS].copy()
         if df_feat.isnull().any().any():
             log.warning("Features con NaN detectados, imputando con 0")
@@ -343,7 +350,7 @@ class OddsClient:
                         mejor = max(mejor, float(outcome["price"]))
         return mejor
  
-    def obtener_partidos(self) -> list[dict]:
+    def obtener_partidos(self) -> list:
         partidos = []
         for liga in CFG.ligas:
             try:
@@ -504,13 +511,23 @@ class BotTenis:
         self.telegram  = TelegramNotifier()
         self.picks_log = PicksLogger()
  
+    def _prob_mercado(self, cuota_a: float, cuota_b: float):
+        """Probabilidades normalizadas directamente de las cuotas."""
+        p_a = 1 / cuota_a
+        p_b = 1 / cuota_b
+        total = p_a + p_b
+        return round(p_a / total, 4), round(p_b / total, 4)
+ 
     def analizar_partido(self, p: dict):
         try:
-            df = construir_features(
-                p["jugador_a"], p["jugador_b"],
-                p["surface"], p["cuota_a"], p["cuota_b"]
-            )
-            prob_a, prob_b = self.modelo.predecir(df)
+            if self.modelo._model is not None:
+                df = construir_features(
+                    p["jugador_a"], p["jugador_b"],
+                    p["surface"], p["cuota_a"], p["cuota_b"]
+                )
+                prob_a, prob_b = self.modelo.predecir(df)
+            else:
+                prob_a, prob_b = self._prob_mercado(p["cuota_a"], p["cuota_b"])
  
             candidatos = [
                 (p["jugador_a"], p["cuota_a"], prob_a),
@@ -574,15 +591,17 @@ class BotTenis:
  
         for p in partidos:
             try:
-                df = construir_features(
-                    p["jugador_a"],
-                    p["jugador_b"],
-                    p["surface"],
-                    p["cuota_a"],
-                    p["cuota_b"]
-                )
- 
-                prob_a, prob_b = self.modelo.predecir(df)
+                if self.modelo._model is not None:
+                    df = construir_features(
+                        p["jugador_a"],
+                        p["jugador_b"],
+                        p["surface"],
+                        p["cuota_a"],
+                        p["cuota_b"]
+                    )
+                    prob_a, prob_b = self.modelo.predecir(df)
+                else:
+                    prob_a, prob_b = self._prob_mercado(p["cuota_a"], p["cuota_b"])
  
                 candidatos = [
                     (p["jugador_a"], p["cuota_a"], prob_a),
@@ -644,3 +663,34 @@ class BotTenis:
             self.telegram.enviar("🎾 *BOT TENIS IA*\n\nHoy no hay picks con EV positivo en el rango 1.50–1.80. Se revisará en el próximo ciclo.")
  
         log.info("✅ Análisis completado")
+ 
+# ============================================================
+# APP WEB (Para mantener el bot vivo en Render)
+# ============================================================
+app = Flask(__name__)
+ 
+@app.route('/')
+def index():
+    return "Bot Tenis IA está corriendo..."
+ 
+def ejecutar_bot():
+    try:
+        bot = BotTenis()
+    except Exception as e:
+        log.error(f"❌ Error al iniciar BotTenis: {e}", exc_info=True)
+        return
+    while True:
+        try:
+            bot.run()
+        except Exception as e:
+            log.error(f"❌ Error en bot.run(): {e}", exc_info=True)
+        log.info("Esperando 12 horas para el próximo ciclo...")
+        time.sleep(12 * 60 * 60)
+ 
+if __name__ == '__main__':
+    # Arrancar el bot en un hilo separado para que no bloquee el servidor Flask
+    threading.Thread(target=ejecutar_bot, daemon=True).start()
+ 
+    # Iniciar servidor Flask
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port)
