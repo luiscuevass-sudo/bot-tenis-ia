@@ -347,6 +347,14 @@ class OddsClient:
  
     def obtener_partidos(self) -> list:
         partidos = []
+ 
+        # Calcular ventana del día siguiente en UTC
+        hoy_utc = datetime.utcnow().date()
+        manana_utc = hoy_utc + timedelta(days=1)
+        inicio = datetime(manana_utc.year, manana_utc.month, manana_utc.day, 0, 0, 0)
+        fin    = datetime(manana_utc.year, manana_utc.month, manana_utc.day, 23, 59, 59)
+        log.info(f"🗓️ Filtrando partidos del {manana_utc} (UTC)")
+ 
         for liga in CFG.ligas:
             try:
                 data = self._get_odds(liga)
@@ -355,6 +363,23 @@ class OddsClient:
                 continue
  
             for match in data:
+                # Filtrar por fecha: solo partidos del día siguiente
+                commence_raw = match.get("commence_time", "")
+                if not commence_raw:
+                    continue
+                try:
+                    # Formato ISO: "2025-05-23T10:00:00Z"
+                    commence_dt = datetime.strptime(
+                        commence_raw.replace("Z", ""), "%Y-%m-%dT%H:%M:%S"
+                    )
+                except ValueError:
+                    log.warning(f"Fecha no parseable: {commence_raw}")
+                    continue
+ 
+                if not (inicio <= commence_dt <= fin):
+                    log.debug(f"Descartado por fecha: {commence_raw}")
+                    continue
+ 
                 torneo = match.get("sport_title", "")
                 surface = detectar_superficie(torneo)
                 bms = match.get("bookmakers", [])
@@ -370,20 +395,21 @@ class OddsClient:
  
                 # Filtrar cuotas extremas (poco líquidas)
                 if cuota_a > CFG.max_cuota or cuota_b > CFG.max_cuota:
-                    log.debug(f"Partido {jugador_a} vs {jugador_b} descartado por cuotas altas")
+                    log.debug(f"Descartado por cuotas altas: {jugador_a} vs {jugador_b}")
                     continue
  
                 partidos.append({
-                    "jugador_a": jugador_a,
-                    "jugador_b": jugador_b,
-                    "cuota_a": cuota_a,
-                    "cuota_b": cuota_b,
-                    "surface": surface,
-                    "torneo": torneo,
-                    "tour": "WTA" if "wta" in liga else "ATP",
+                    "jugador_a":    jugador_a,
+                    "jugador_b":    jugador_b,
+                    "cuota_a":      cuota_a,
+                    "cuota_b":      cuota_b,
+                    "surface":      surface,
+                    "torneo":       torneo,
+                    "tour":         "WTA" if "wta" in liga else "ATP",
+                    "commence_time": commence_dt.strftime("%H:%M UTC"),
                 })
  
-        log.info(f"Total partidos obtenidos: {len(partidos)}")
+        log.info(f"Partidos del día siguiente encontrados: {len(partidos)}")
         return partidos
  
 # ============================================================
@@ -623,15 +649,16 @@ class BotTenis:
                     edge = round((cuota / cuota_justa - 1) * 100, 1)
  
                     candidatos_ev.append({
-                        "partido":     f"{p['jugador_a']} vs {p['jugador_b']}",
-                        "jugador":     jugador,
-                        "cuota":       cuota,
-                        "prob":        prob,
-                        "ev":          ev,
-                        "edge":        edge,
-                        "torneo":      p["torneo"],
-                        "tour":        p["tour"],
-                        "surface":     p["surface"],
+                        "partido":      f"{p['jugador_a']} vs {p['jugador_b']}",
+                        "jugador":      jugador,
+                        "cuota":        cuota,
+                        "prob":         prob,
+                        "ev":           ev,
+                        "edge":         edge,
+                        "torneo":       p["torneo"],
+                        "tour":         p["tour"],
+                        "surface":      p["surface"],
+                        "commence_time": p.get("commence_time", "N/D"),
                     })
  
             except Exception as e:
@@ -648,10 +675,11 @@ class BotTenis:
                 msg_parts.append(f"📍 {pick['partido']}")
                 msg_parts.append(f"🏆 {pick['torneo']} ({pick['tour']})")
                 msg_parts.append(f"🌍 Superficie: {pick['surface'].capitalize()}")
+                msg_parts.append(f"🕐 Hora: {pick.get('commence_time', 'N/D')}")
                 msg_parts.append(f"💰 Cuota: `{pick['cuota']}`")
                 msg_parts.append(f"🧠 Confianza IA: `{pick['prob']*100:.1f}%`")
-                msg_parts.append(f"⚡ Edge: `+{pick['edge']}%`")
-                msg_parts.append(f"📈 EV: `+{pick['ev']*100:.1f}%`")
+                msg_parts.append(f"⚡ Edge: `{pick['edge']}%`")
+                msg_parts.append(f"📈 EV: `{pick['ev']*100:.1f}%`")
                 msg_parts.append("")
             msg_parts.append(linea)
             msg_parts.append("🤖 Cuotas 1.40–2.20 · Menor margen de casa · Mayor EV")
@@ -659,7 +687,7 @@ class BotTenis:
             log.info("✅ TOP 3 EV enviado a Telegram")
         else:
             log.warning("No hay picks con EV positivo en rango 1.50–1.80")
-            self.telegram.enviar("🎾 *BOT TENIS IA*\n\nHoy no hay picks con EV positivo en el rango 1.40–2.20. Se revisará en el próximo ciclo.")
+            self.telegram.enviar("🎾 *BOT TENIS IA*\n\nNo hay picks para mañana " + (datetime.utcnow() + timedelta(days=1)).strftime('%d/%m/%Y') + " en el rango 1.40–2.20. Se revisará en el próximo ciclo.")
  
         log.info("✅ Análisis completado")
  
@@ -672,6 +700,24 @@ app = Flask(__name__)
 def index():
     return "Bot Tenis IA está corriendo..."
  
+def segundos_hasta_proximas_7pm() -> float:
+    """Calcula los segundos hasta las 19:00 hora Colombia (UTC-5)."""
+    ahora_utc = datetime.utcnow()
+    ahora_col = ahora_utc - timedelta(hours=5)  # Colombia = UTC-5
+ 
+    # Próximas 7pm en hora Colombia
+    objetivo = ahora_col.replace(hour=19, minute=0, second=0, microsecond=0)
+ 
+    # Si ya pasaron las 7pm de hoy, programar para mañana
+    if ahora_col >= objetivo:
+        objetivo += timedelta(days=1)
+ 
+    espera = (objetivo - ahora_col).total_seconds()
+    hora_str = objetivo.strftime("%Y-%m-%d %H:%M")
+    log.info(f"⏰ Próximo análisis: {hora_str} hora Colombia ({espera/3600:.1f}h)")
+    return espera
+ 
+ 
 def ejecutar_bot():
     try:
         bot = BotTenis()
@@ -683,8 +729,9 @@ def ejecutar_bot():
             bot.run()
         except Exception as e:
             log.error(f"❌ Error en bot.run(): {e}", exc_info=True)
-        log.info("Esperando 12 horas para el próximo ciclo...")
-        time.sleep(12 * 60 * 60)
+        espera = segundos_hasta_proximas_7pm()
+        log.info(f"💤 Durmiendo {espera/3600:.1f}h hasta las 7pm Colombia...")
+        time.sleep(espera)
  
 if __name__ == '__main__':
     # Arrancar el bot en un hilo separado para que no bloquee el servidor Flask
