@@ -84,7 +84,46 @@ class Config:
     rate_limit_delay: float = 1.5  # Segundos entre requests al scraper
 
     # Competiciones
-    ligas: list = field(default_factory=lambda: ["tennis_atp", "tennis_wta"])
+    ligas: list = field(default_factory=lambda: [
+        # ── ATP ──────────────────────────────────────────────
+        "tennis_atp_french_open",
+        "tennis_atp_wimbledon",
+        "tennis_atp_us_open",
+        "tennis_atp_aus_open_singles",
+        "tennis_atp_indian_wells",
+        "tennis_atp_miami_open",
+        "tennis_atp_madrid_open",
+        "tennis_atp_italian_open",
+        "tennis_atp_canadian_open",
+        "tennis_atp_cincinnati_open",
+        "tennis_atp_shanghai_masters",
+        "tennis_atp_paris_masters",
+        "tennis_atp_monte_carlo_masters",
+        "tennis_atp_barcelona_open",
+        "tennis_atp_hamburg_open",
+        "tennis_atp_dubai",
+        "tennis_atp_qatar_open",
+        "tennis_atp_munich",
+        "tennis_atp_china_open",
+        # ── WTA ──────────────────────────────────────────────
+        "tennis_wta_french_open",
+        "tennis_wta_wimbledon",
+        "tennis_wta_us_open",
+        "tennis_wta_aus_open_singles",
+        "tennis_wta_indian_wells",
+        "tennis_wta_miami_open",
+        "tennis_wta_madrid_open",
+        "tennis_wta_italian_open",
+        "tennis_wta_canadian_open",
+        "tennis_wta_cincinnati_open",
+        "tennis_wta_dubai",
+        "tennis_wta_qatar_open",
+        "tennis_wta_charleston_open",
+        "tennis_wta_strasbourg",
+        "tennis_wta_stuttgart_open",
+        "tennis_wta_china_open",
+        "tennis_wta_wuhan_open",
+    ])
     regions: str = "eu"
 
     # Superficies de torneos conocidos
@@ -390,12 +429,13 @@ class OddsClient:
     def __init__(self, api_key: str = CFG.odds_api_key):
         self._key = api_key
 
-    @retry()
     def _get_odds(self, liga: str) -> list:
+        """
+        Consulta la API para un torneo específico.
+        Retorna lista vacía si el torneo no está en temporada (404)
+        sin lanzar excepción ni reintentar (es comportamiento esperado).
+        """
         url = f"{self.BASE_URL}/{liga}/odds/"
-        # Ventana: desde ahora hasta +48h en UTC
-        # Esto asegura que la API devuelva partidos futuros aunque
-        # sean pasado mañana en UTC pero mañana en Colombia (UTC-5)
         ahora_utc = datetime.utcnow()
         params = {
             "apiKey":           self._key,
@@ -405,11 +445,23 @@ class OddsClient:
             "commenceTimeFrom": ahora_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
             "commenceTimeTo":   (ahora_utc + timedelta(hours=48)).strftime("%Y-%m-%dT%H:%M:%SZ"),
         }
-        res = requests.get(url, params=params, timeout=CFG.request_timeout)
-        res.raise_for_status()
-        data = res.json()
-        log.info(f"  [{liga}] API devolvió {len(data)} eventos en ventana 48h")
-        return data
+        try:
+            res = requests.get(url, params=params, timeout=CFG.request_timeout)
+            if res.status_code == 404:
+                # Torneo fuera de temporada — normal, no es error
+                log.debug(f"  [{liga}] fuera de temporada (404), omitiendo")
+                return []
+            res.raise_for_status()
+            data = res.json()
+            if data:
+                log.info(f"  [{liga}] {len(data)} partidos encontrados ✅")
+            return data
+        except requests.exceptions.HTTPError as e:
+            log.warning(f"  [{liga}] HTTP {e.response.status_code}, omitiendo")
+            return []
+        except Exception as e:
+            log.error(f"  [{liga}] Error de red: {e}")
+            return []
 
     @staticmethod
     def _mejor_cuota(bookmakers: list, nombre: str) -> float:
