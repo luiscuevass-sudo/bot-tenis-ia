@@ -393,19 +393,23 @@ class OddsClient:
     @retry()
     def _get_odds(self, liga: str) -> list:
         url = f"{self.BASE_URL}/{liga}/odds/"
+        # Ventana: desde ahora hasta +48h en UTC
+        # Esto asegura que la API devuelva partidos futuros aunque
+        # sean pasado mañana en UTC pero mañana en Colombia (UTC-5)
+        ahora_utc = datetime.utcnow()
         params = {
-            "apiKey": self._key,
-            "regions": CFG.regions,
-            "markets": "h2h",
-            "oddsFormat": "decimal",
-            # Pedir partidos hasta pasado mañana para cubrir bien el día siguiente
-            "commenceTimeTo": (
-                datetime.utcnow() + timedelta(days=2)
-            ).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "apiKey":           self._key,
+            "regions":          CFG.regions,
+            "markets":          "h2h",
+            "oddsFormat":       "decimal",
+            "commenceTimeFrom": ahora_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "commenceTimeTo":   (ahora_utc + timedelta(hours=48)).strftime("%Y-%m-%dT%H:%M:%SZ"),
         }
         res = requests.get(url, params=params, timeout=CFG.request_timeout)
         res.raise_for_status()
-        return res.json()
+        data = res.json()
+        log.info(f"  [{liga}] API devolvió {len(data)} eventos en ventana 48h")
+        return data
 
     @staticmethod
     def _mejor_cuota(bookmakers: list, nombre: str) -> float:
@@ -425,7 +429,7 @@ class OddsClient:
     def obtener_partidos(self) -> list[dict]:
         partidos = []
         manana = fecha_manana_local()
-        log.info(f"📅 Buscando partidos para: {manana}")
+        log.info(f"📅 Buscando partidos para mañana: {manana} (Colombia UTC-5)")
 
         for liga in CFG.ligas:
             try:
@@ -434,16 +438,20 @@ class OddsClient:
                 log.error(f"Odds API error ({liga}): {e}")
                 continue
 
+            total_liga      = len(data)
+            pasaron_fecha   = 0
+            pasaron_cuota   = 0
+
             for match in data:
-                # ── Filtro 1: Solo partidos de mañana ───────
+                # ── Filtro 1: Solo partidos de mañana (hora Colombia) ─
                 commence_time = match.get("commence_time", "")
                 if not es_partido_de_manana(commence_time):
                     continue
+                pasaron_fecha += 1
 
-                torneo = match.get("sport_title", "")
-                surface = detectar_superficie(torneo)
-                bms = match.get("bookmakers", [])
-
+                torneo    = match.get("sport_title", "")
+                surface   = detectar_superficie(torneo)
+                bms       = match.get("bookmakers", [])
                 jugador_a = match.get("home_team", "")
                 jugador_b = match.get("away_team", "")
 
@@ -453,15 +461,13 @@ class OddsClient:
                 cuota_a = self._mejor_cuota(bms, jugador_a)
                 cuota_b = self._mejor_cuota(bms, jugador_b)
 
-                # ── Filtro 2: Al menos uno en rango escalera ─
-                # Solo procesa el partido si alguno de los dos
-                # jugadores tiene cuota entre 1.35 y 1.70.
+                # ── Filtro 2: Al menos uno en rango escalera 1.35–1.70 ─
                 if not (self._en_rango_escalera(cuota_a) or self._en_rango_escalera(cuota_b)):
-                    log.debug(
-                        f"Descartado (cuotas fuera de rango escalera): "
-                        f"{jugador_a} {cuota_a} vs {jugador_b} {cuota_b}"
+                    log.info(
+                        f"  Fuera de rango: {jugador_a} [{cuota_a}] vs {jugador_b} [{cuota_b}]"
                     )
                     continue
+                pasaron_cuota += 1
 
                 partidos.append({
                     "jugador_a":     jugador_a,
@@ -474,7 +480,14 @@ class OddsClient:
                     "commence_time": commence_time,
                 })
 
-        log.info(f"Partidos válidos para mañana (rango escalera): {len(partidos)}")
+            # Log diagnóstico por liga
+            log.info(
+                f"  [{liga}] total={total_liga} | "
+                f"fecha_mañana={pasaron_fecha} | "
+                f"rango_escalera={pasaron_cuota}"
+            )
+
+        log.info(f"✅ Partidos listos para analizar: {len(partidos)}")
         return partidos
 
 # ============================================================
