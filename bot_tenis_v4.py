@@ -298,14 +298,55 @@ class ModeloIA:
             self._model = pickle.load(f)
         log.info(f"✅ Modelo cargado desde {path}")
 
+    # Límites de seguridad: el modelo nunca puede estar 100% seguro
+    PROB_MIN = 0.35
+    PROB_MAX = 0.85
+
     def predecir(self, df: pd.DataFrame) -> tuple[float, float]:
-        """Retorna (prob_a, prob_b)."""
+        """
+        Retorna (prob_a, prob_b) con validaciones de sanidad.
+
+        Problemas que detecta y corrige:
+        - Features todos a cero (scraper bloqueado) → avisa y devuelve 0.5/0.5
+        - Probabilidades extremas (>85% o <35%) → capea al límite seguro
+        - Clases invertidas → normaliza para que prob_a + prob_b = 1
+        """
         df = df[self.FEATURE_COLUMNS]
         if df.isnull().any().any():
             log.warning("Features con NaN detectados, imputando con 0")
             df = df.fillna(0)
+
+        # Detectar si TODOS los deltas son cero (scraper falló para ambos jugadores)
+        cols_delta = [c for c in self.FEATURE_COLUMNS if c.startswith("delta_")]
+        todos_cero = (df[cols_delta].abs().sum(axis=1) == 0).all()
+        if todos_cero:
+            log.warning("⚠️ Todos los features delta son 0 — scraper bloqueado para ambos jugadores. Predicción neutralizada a 50/50.")
+            return 0.50, 0.50
+
         probs = self._model.predict_proba(df)[0]
-        return float(probs[1]), float(probs[0])
+        log.debug(f"Probs raw del modelo: {probs}")
+
+        # El modelo puede tener 1 o 2 clases
+        if len(probs) == 1:
+            log.warning("Modelo devolvió solo 1 clase — usando 50/50")
+            return 0.50, 0.50
+
+        prob_a = float(probs[1])
+        prob_b = float(probs[0])
+
+        # Sanity check: deben sumar ~1.0
+        total = prob_a + prob_b
+        if total == 0:
+            return 0.50, 0.50
+        prob_a = prob_a / total
+        prob_b = prob_b / total
+
+        # Cap de seguridad: ningún partido puede ser >85% seguro
+        prob_a = max(self.PROB_MIN, min(self.PROB_MAX, prob_a))
+        prob_b = 1.0 - prob_a
+
+        log.debug(f"Probs finales: jugador_a={round(prob_a*100,1)}% jugador_b={round(prob_b*100,1)}%")
+        return prob_a, prob_b
 
 # ============================================================
 # SCRAPER DE JUGADORES
@@ -626,7 +667,19 @@ def construir_features(
         "surface":            SURFACE_MAP.get(surface, 0),
     }
 
-    return pd.DataFrame([features])
+    df = pd.DataFrame([features])
+
+    # Log de sanidad: muestra qué features son distintos de cero
+    no_cero = {k: v for k, v in features.items() if v != 0 and k != "surface"}
+    if not no_cero:
+        log.warning(
+            f"⚠️ construir_features: TODOS los deltas son 0 para "
+            f"{jugador_a} vs {jugador_b} — el scraper falló para ambos jugadores"
+        )
+    else:
+        log.debug(f"Features no-cero ({jugador_a} vs {jugador_b}): {no_cero}")
+
+    return df
 
 # ============================================================
 # TELEGRAM
@@ -845,3 +898,4 @@ class BotTenis:
 
 if __name__ == "__main__":
     BotTenis().run()
+            
