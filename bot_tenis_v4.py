@@ -311,7 +311,26 @@ class ModeloIA:
 # SCRAPER DE JUGADORES
 # ============================================================
 
-HEADERS_HTTP = {"User-Agent": "Mozilla/5.0 (compatible; BotTenisIA/6.0)"}
+# Rotación de User-Agents para evitar bloqueos 403
+_UA_LIST = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4.1 Safari/605.1.15",
+    "Mozilla/5.0 (X11; Linux x86_64; rv:125.0) Gecko/20100101 Firefox/125.0",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:124.0) Gecko/20100101 Firefox/124.0",
+]
+_ua_index = 0
+
+def _next_ua() -> dict:
+    global _ua_index
+    ua = _UA_LIST[_ua_index % len(_UA_LIST)]
+    _ua_index += 1
+    return {
+        "User-Agent": ua,
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.5",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Connection": "keep-alive",
+    }
 SURFACE_MAP = {"hard": 0, "clay": 1, "grass": 2}
 
 STATS_DEFAULT = {
@@ -331,12 +350,18 @@ STATS_DEFAULT = {
 }
 
 
-@retry()
 def _fetch(url: str, params: dict = None) -> requests.Response:
-    return requests.get(
-        url, headers=HEADERS_HTTP, params=params,
-        timeout=CFG.request_timeout
-    )
+    """Fetch con User-Agent rotativo y backoff ante 403/429."""
+    for intento in range(3):
+        headers = _next_ua()
+        res = requests.get(url, headers=headers, params=params, timeout=CFG.request_timeout)
+        if res.status_code == 403:
+            wait = 3 * (intento + 1)
+            log.debug(f"403 en {url} — esperando {wait}s y rotando UA")
+            time.sleep(wait)
+            continue
+        return res
+    return res  # devuelve el último 403 para que el caller lo maneje
 
 
 def extraer_jugador(nombre: str) -> dict:
@@ -351,8 +376,12 @@ def extraer_jugador(nombre: str) -> dict:
         url = f"https://www.tennisabstract.com/cgi-bin/player.cgi?p={nombre_fmt}"
         res = _fetch(url)
 
+        if res.status_code == 403:
+            log.debug(f"tennisabstract bloqueó (403) a {nombre} — usando stats por defecto")
+            cache_jugadores.set(nombre, stats)
+            return stats
         if res.status_code != 200:
-            log.warning(f"tennisabstract HTTP {res.status_code} para {nombre}")
+            log.debug(f"tennisabstract HTTP {res.status_code} para {nombre} — usando stats por defecto")
             cache_jugadores.set(nombre, stats)
             return stats
 
@@ -407,10 +436,12 @@ def extraer_jugador(nombre: str) -> dict:
     return stats
 
 
-@retry()
 def calcular_h2h(jugador_a: str, jugador_b: str) -> int:
     url = f"https://www.tennisabstract.com/cgi-bin/player.cgi?p={jugador_a.replace(' ', '_')}"
-    res = _fetch(url)
+    try:
+        res = _fetch(url)
+    except Exception:
+        return 0
     if res.status_code != 200:
         return 0
     text = BeautifulSoup(res.text, "html.parser").get_text(" ")
@@ -443,7 +474,7 @@ class OddsClient:
             "markets":          "h2h",
             "oddsFormat":       "decimal",
             "commenceTimeFrom": ahora_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "commenceTimeTo":   (ahora_utc + timedelta(hours=48)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "commenceTimeTo":   (ahora_utc + timedelta(hours=60)).strftime("%Y-%m-%dT%H:%M:%SZ"),  # 60h cubre holgadamente el día siguiente en Colombia
         }
         try:
             res = requests.get(url, params=params, timeout=CFG.request_timeout)
@@ -478,9 +509,14 @@ class OddsClient:
     def _en_rango_escalera(cuota: float) -> bool:
         return CFG.cuota_escalera_min <= cuota <= CFG.cuota_escalera_max
 
-    def obtener_partidos(self) -> list[dict]:
+    def obtener_partidos(self) -> tuple[list[dict], int, int]:
+        """
+        Retorna (partidos_en_rango, total_fecha_manana, total_fuera_rango).
+        """
         partidos = []
         manana = fecha_manana_local()
+        total_fecha_global   = 0
+        total_fuera_rango    = 0
         log.info(f"📅 Buscando partidos para mañana: {manana} (Colombia UTC-5)")
 
         for liga in CFG.ligas:
@@ -493,6 +529,8 @@ class OddsClient:
             total_liga      = len(data)
             pasaron_fecha   = 0
             pasaron_cuota   = 0
+
+            descartados_cuota = []  # para diagnóstico
 
             for match in data:
                 # ── Filtro 1: Solo partidos de mañana (hora Colombia) ─
@@ -515,8 +553,8 @@ class OddsClient:
 
                 # ── Filtro 2: Al menos uno en rango escalera 1.35–1.70 ─
                 if not (self._en_rango_escalera(cuota_a) or self._en_rango_escalera(cuota_b)):
-                    log.info(
-                        f"  Fuera de rango: {jugador_a} [{cuota_a}] vs {jugador_b} [{cuota_b}]"
+                    descartados_cuota.append(
+                        f"{jugador_a}[{cuota_a}] vs {jugador_b}[{cuota_b}]"
                     )
                     continue
                 pasaron_cuota += 1
@@ -532,15 +570,24 @@ class OddsClient:
                     "commence_time": commence_time,
                 })
 
+            total_fecha_global += pasaron_fecha
+            total_fuera_rango  += len(descartados_cuota)
+
             # Log diagnóstico por liga
             log.info(
-                f"  [{liga}] total={total_liga} | "
+                f"  [{liga}] total_api={total_liga} | "
                 f"fecha_mañana={pasaron_fecha} | "
-                f"rango_escalera={pasaron_cuota}"
+                f"en_rango_escalera={pasaron_cuota} | "
+                f"fuera_de_rango={len(descartados_cuota)}"
             )
+            for desc in descartados_cuota:
+                log.info(f"    ↳ cuota fuera rango 1.35–1.70: {desc}")
 
-        log.info(f"✅ Partidos listos para analizar: {len(partidos)}")
-        return partidos
+        log.info(
+            f"✅ Resumen global: fecha_mañana={total_fecha_global} | "
+            f"en_rango={len(partidos)} | fuera_rango={total_fuera_rango}"
+        )
+        return partidos, total_fecha_global, total_fuera_rango
 
 # ============================================================
 # CONSTRUCCIÓN DE FEATURES
@@ -746,27 +793,30 @@ class BotTenis:
         manana = fecha_manana_local()
         log.info(f"🎾 BOT TENIS IA v7.0 — Análisis escalera para {manana}")
 
-        partidos = self.odds.obtener_partidos()
+        partidos, total_manana, fuera_rango = self.odds.obtener_partidos()
 
         if not partidos:
             sin_picks = (
                 f"🎾 *BOT TENIS IA v7.0*\n"
                 f"━━━━━━━━━━━━━━━━━━━\n"
                 f"📅 Partidos para: `{manana}`\n"
-                f"⚠️ No se encontraron partidos en rango escalera "
-                f"(1.35–1.70) para mañana."
+                f"📊 Partidos encontrados para mañana: `{total_manana}`\n"
+                f"❌ En rango escalera (1.35–1.70): `0`\n"
+                f"⚠️ Todos tienen cuotas fuera del rango. Sin picks de escalera."
             )
             self.telegram.enviar(sin_picks)
-            log.warning("No se encontraron partidos válidos para mañana")
+            log.warning(f"0 en rango escalera (mañana={total_manana}, fuera_rango={fuera_rango})")
             return
 
-        # Mensaje de inicio
+        # Mensaje de inicio con diagnóstico completo
         inicio = (
             f"🎾 *BOT TENIS IA v7.0 — ESCALERA*\n"
             f"━━━━━━━━━━━━━━━━━━━\n"
             f"📅 Analizando partidos para: `{manana}`\n"
-            f"🔍 Partidos en rango escalera: `{len(partidos)}`\n"
-            f"⏳ Procesando estadísticas…"
+            f"📊 Total partidos mañana: `{total_manana}`\n"
+            f"🎯 En rango escalera (1.35–1.70): `{len(partidos)}`\n"
+            f"⏭ Fuera de rango (cuota muy baja/alta): `{fuera_rango}`\n"
+            f"⏳ Procesando estadísticas IA…"
         )
         self.telegram.enviar(inicio)
 
@@ -779,8 +829,10 @@ class BotTenis:
             f"✅ *ANÁLISIS COMPLETADO*\n"
             f"━━━━━━━━━━━━━━━━━━━\n"
             f"📅 Fecha: `{manana}`\n"
-            f"🎯 Partidos analizados: `{len(partidos)}`\n"
-            f"🔥 Picks escalera válidos: `{self._picks_enviados}`\n"
+            f"📊 Total partidos mañana: `{total_manana}`\n"
+            f"🎯 En rango escalera: `{len(partidos)}`\n"
+            f"⏭ Fuera de rango: `{fuera_rango}`\n"
+            f"🔥 Picks válidos enviados: `{self._picks_enviados}`\n"
             f"━━━━━━━━━━━━━━━━━━━\n"
             f"🧠 XGBoost + ELO + H2H + Surface + Kelly"
         )
