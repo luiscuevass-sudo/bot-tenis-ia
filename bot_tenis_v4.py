@@ -19,6 +19,9 @@
 # ✅ Filtro de cuotas escalera: 1.35 – 1.70
 # ✅ Análisis estadístico completo sobre candidatos filtrados
 # ✅ Resumen diario al final con total de picks encontrados
+#
+# NUEVO v7.1:
+# ✅ Loop infinito con schedule para mantener proceso vivo en Render
 # ============================================================
 
 import os
@@ -29,6 +32,7 @@ import logging
 import pickle
 import hashlib
 import requests
+import schedule
 import pandas as pd
 
 from datetime import datetime, timedelta
@@ -58,10 +62,6 @@ class Config:
     picks_log_path: str = "picks_log.csv"
 
     # ── Filtro de fecha ─────────────────────────────────────
-    # Corre el bot cada noche y solo analiza partidos
-    # cuya fecha de inicio sea exactamente el día siguiente.
-    # Ajusta utc_offset_horas si tu zona horaria difiere de UTC.
-    # Ejemplos: Colombia = -5, Argentina = -3, España = +1/+2
     utc_offset_horas: int = -5  # Colombia (UTC-5)
 
     # ── Rango de cuotas ESCALERA ────────────────────────────
@@ -69,19 +69,19 @@ class Config:
     cuota_escalera_max: float = 1.70
 
     # ── Umbrales de value betting ───────────────────────────
-    value_threshold: float = 1.04   # Edge mínimo sobre cuota justa
-    min_prob: float = 0.59          # ~59% prob implícita en cuota 1.70
-    kelly_fraccion: float = 0.25    # Kelly fraccionado (conservador)
-    bankroll: float = 1000.0        # Bankroll base para Kelly
+    value_threshold: float = 1.04
+    min_prob: float = 0.59
+    kelly_fraccion: float = 0.25
+    bankroll: float = 1000.0
 
     # Red
     request_timeout: int = 15
     max_retries: int = 3
-    retry_backoff: float = 2.0     # Segundos base para backoff
+    retry_backoff: float = 2.0
 
     # Caché
-    cache_ttl_seconds: int = 3600  # 1 hora
-    rate_limit_delay: float = 1.5  # Segundos entre requests al scraper
+    cache_ttl_seconds: int = 3600
+    rate_limit_delay: float = 1.5
 
     # Competiciones
     ligas: list = field(default_factory=lambda: [
@@ -164,12 +164,10 @@ def setup_logger(name: str = "bot_tenis") -> logging.Logger:
         datefmt="%Y-%m-%d %H:%M:%S"
     )
 
-    # Consola
     ch = logging.StreamHandler()
     ch.setLevel(logging.INFO)
     ch.setFormatter(fmt)
 
-    # Archivo rotativo (5 MB x 3 backups)
     fh = RotatingFileHandler(
         "bot_tenis.log",
         maxBytes=5 * 1024 * 1024,
@@ -190,7 +188,6 @@ log = setup_logger()
 # ============================================================
 
 def retry(max_retries: int = CFG.max_retries, backoff: float = CFG.retry_backoff):
-    """Decorador de reintentos con backoff exponencial."""
     def decorator(func):
         @wraps(func)
         def wrapper(*args, **kwargs):
@@ -209,7 +206,6 @@ def retry(max_retries: int = CFG.max_retries, backoff: float = CFG.retry_backoff
 
 
 def kelly_criterion(prob: float, cuota: float, fraccion: float = CFG.kelly_fraccion) -> float:
-    """Calcula el % del bankroll a apostar según Kelly fraccionado."""
     b = cuota - 1
     q = 1 - prob
     kelly = (b * prob - q) / b
@@ -225,23 +221,16 @@ def detectar_superficie(torneo: str) -> str:
     for nombre, sup in CFG.torneo_superficie.items():
         if nombre in torneo_lower:
             return sup
-    return "hard"  # Default estadístico más común
+    return "hard"
 
 
 def fecha_manana_local() -> datetime.date:
-    """Retorna la fecha de mañana según el offset de zona horaria configurado."""
     ahora_local = datetime.utcnow() + timedelta(hours=CFG.utc_offset_horas)
     return (ahora_local + timedelta(days=1)).date()
 
 
 def es_partido_de_manana(commence_time_str: str) -> bool:
-    """
-    Valida que el partido empiece exactamente el día de mañana (hora local).
-    commence_time_str viene en formato ISO 8601 de la Odds API, ej:
-    '2025-06-15T14:00:00Z'
-    """
     try:
-        # La Odds API siempre retorna UTC (sufijo Z)
         dt_utc = datetime.strptime(commence_time_str, "%Y-%m-%dT%H:%M:%SZ")
         dt_local = dt_utc + timedelta(hours=CFG.utc_offset_horas)
         return dt_local.date() == fecha_manana_local()
@@ -298,25 +287,15 @@ class ModeloIA:
             self._model = pickle.load(f)
         log.info(f"✅ Modelo cargado desde {path}")
 
-    # Límites de seguridad: el modelo nunca puede estar 100% seguro
     PROB_MIN = 0.35
     PROB_MAX = 0.85
 
     def predecir(self, df: pd.DataFrame) -> tuple[float, float]:
-        """
-        Retorna (prob_a, prob_b) con validaciones de sanidad.
-
-        Problemas que detecta y corrige:
-        - Features todos a cero (scraper bloqueado) → avisa y devuelve 0.5/0.5
-        - Probabilidades extremas (>85% o <35%) → capea al límite seguro
-        - Clases invertidas → normaliza para que prob_a + prob_b = 1
-        """
         df = df[self.FEATURE_COLUMNS]
         if df.isnull().any().any():
             log.warning("Features con NaN detectados, imputando con 0")
             df = df.fillna(0)
 
-        # Detectar si TODOS los deltas son cero (scraper falló para ambos jugadores)
         cols_delta = [c for c in self.FEATURE_COLUMNS if c.startswith("delta_")]
         todos_cero = (df[cols_delta].abs().sum(axis=1) == 0).all()
         if todos_cero:
@@ -326,7 +305,6 @@ class ModeloIA:
         probs = self._model.predict_proba(df)[0]
         log.debug(f"Probs raw del modelo: {probs}")
 
-        # El modelo puede tener 1 o 2 clases
         if len(probs) == 1:
             log.warning("Modelo devolvió solo 1 clase — usando 50/50")
             return 0.50, 0.50
@@ -334,14 +312,12 @@ class ModeloIA:
         prob_a = float(probs[1])
         prob_b = float(probs[0])
 
-        # Sanity check: deben sumar ~1.0
         total = prob_a + prob_b
         if total == 0:
             return 0.50, 0.50
         prob_a = prob_a / total
         prob_b = prob_b / total
 
-        # Cap de seguridad: ningún partido puede ser >85% seguro
         prob_a = max(self.PROB_MIN, min(self.PROB_MAX, prob_a))
         prob_b = 1.0 - prob_a
 
@@ -352,7 +328,6 @@ class ModeloIA:
 # SCRAPER DE JUGADORES
 # ============================================================
 
-# Rotación de User-Agents para evitar bloqueos 403
 _UA_LIST = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4.1 Safari/605.1.15",
@@ -372,6 +347,7 @@ def _next_ua() -> dict:
         "Accept-Encoding": "gzip, deflate, br",
         "Connection": "keep-alive",
     }
+
 SURFACE_MAP = {"hard": 0, "clay": 1, "grass": 2}
 
 STATS_DEFAULT = {
@@ -392,7 +368,6 @@ STATS_DEFAULT = {
 
 
 def _fetch(url: str, params: dict = None) -> requests.Response:
-    """Fetch con User-Agent rotativo y backoff ante 403/429."""
     for intento in range(3):
         headers = _next_ua()
         res = requests.get(url, headers=headers, params=params, timeout=CFG.request_timeout)
@@ -402,7 +377,7 @@ def _fetch(url: str, params: dict = None) -> requests.Response:
             time.sleep(wait)
             continue
         return res
-    return res  # devuelve el último 403 para que el caller lo maneje
+    return res
 
 
 def extraer_jugador(nombre: str) -> dict:
@@ -502,11 +477,6 @@ class OddsClient:
         self._key = api_key
 
     def _get_odds(self, liga: str) -> list:
-        """
-        Consulta la API para un torneo específico.
-        Retorna lista vacía si el torneo no está en temporada (404)
-        sin lanzar excepción ni reintentar (es comportamiento esperado).
-        """
         url = f"{self.BASE_URL}/{liga}/odds/"
         ahora_utc = datetime.utcnow()
         params = {
@@ -515,12 +485,11 @@ class OddsClient:
             "markets":          "h2h",
             "oddsFormat":       "decimal",
             "commenceTimeFrom": ahora_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "commenceTimeTo":   (ahora_utc + timedelta(hours=60)).strftime("%Y-%m-%dT%H:%M:%SZ"),  # 60h cubre holgadamente el día siguiente en Colombia
+            "commenceTimeTo":   (ahora_utc + timedelta(hours=60)).strftime("%Y-%m-%dT%H:%M:%SZ"),
         }
         try:
             res = requests.get(url, params=params, timeout=CFG.request_timeout)
             if res.status_code == 404:
-                # Torneo fuera de temporada — normal, no es error
                 log.debug(f"  [{liga}] fuera de temporada (404), omitiendo")
                 return []
             res.raise_for_status()
@@ -537,7 +506,6 @@ class OddsClient:
 
     @staticmethod
     def _mejor_cuota(bookmakers: list, nombre: str) -> float:
-        """Devuelve la MEJOR cuota disponible entre todos los bookmakers."""
         mejor = 1.0
         for bm in bookmakers:
             for market in bm.get("markets", []):
@@ -551,9 +519,6 @@ class OddsClient:
         return CFG.cuota_escalera_min <= cuota <= CFG.cuota_escalera_max
 
     def obtener_partidos(self) -> tuple[list[dict], int, int]:
-        """
-        Retorna (partidos_en_rango, total_fecha_manana, total_fuera_rango).
-        """
         partidos = []
         manana = fecha_manana_local()
         total_fecha_global   = 0
@@ -570,11 +535,9 @@ class OddsClient:
             total_liga      = len(data)
             pasaron_fecha   = 0
             pasaron_cuota   = 0
-
-            descartados_cuota = []  # para diagnóstico
+            descartados_cuota = []
 
             for match in data:
-                # ── Filtro 1: Solo partidos de mañana (hora Colombia) ─
                 commence_time = match.get("commence_time", "")
                 if not es_partido_de_manana(commence_time):
                     continue
@@ -592,7 +555,6 @@ class OddsClient:
                 cuota_a = self._mejor_cuota(bms, jugador_a)
                 cuota_b = self._mejor_cuota(bms, jugador_b)
 
-                # ── Filtro 2: Al menos uno en rango escalera 1.35–1.70 ─
                 if not (self._en_rango_escalera(cuota_a) or self._en_rango_escalera(cuota_b)):
                     descartados_cuota.append(
                         f"{jugador_a}[{cuota_a}] vs {jugador_b}[{cuota_b}]"
@@ -614,7 +576,6 @@ class OddsClient:
             total_fecha_global += pasaron_fecha
             total_fuera_rango  += len(descartados_cuota)
 
-            # Log diagnóstico por liga
             log.info(
                 f"  [{liga}] total_api={total_liga} | "
                 f"fecha_mañana={pasaron_fecha} | "
@@ -669,7 +630,6 @@ def construir_features(
 
     df = pd.DataFrame([features])
 
-    # Log de sanidad: muestra qué features son distintos de cero
     no_cero = {k: v for k, v in features.items() if v != 0 and k != "surface"}
     if not no_cero:
         log.warning(
@@ -735,7 +695,6 @@ def formatear_mensaje(p: dict, jugador: str, cuota_casa: float, cuota_justa: flo
     ventaja = round((edge - 1) * 100, 1)
     estrellas = "⭐" * min(5, max(1, int(ventaja / 2)))
 
-    # Hora local del partido si está disponible
     hora_str = ""
     if p.get("commence_time"):
         try:
@@ -773,7 +732,7 @@ class BotTenis:
         self.odds            = OddsClient()
         self.telegram        = TelegramNotifier()
         self.picks_log       = PicksLogger()
-        self._picks_enviados = 0   # contador para resumen final
+        self._picks_enviados = 0
 
     def analizar_partido(self, p: dict):
         try:
@@ -790,11 +749,9 @@ class BotTenis:
 
             for jugador, cuota_casa, prob in candidatos:
 
-                # ── Filtro A: cuota del candidato en rango escalera ──
                 if not (CFG.cuota_escalera_min <= cuota_casa <= CFG.cuota_escalera_max):
                     continue
 
-                # ── Filtro B: probabilidad mínima del modelo ─────────
                 if prob < CFG.min_prob:
                     log.debug(f"{jugador}: prob IA {round(prob*100,1)}% < mínimo {CFG.min_prob*100}%")
                     continue
@@ -802,7 +759,6 @@ class BotTenis:
                 cuota_justa = round(1 / prob, 2)
                 edge = cuota_casa / cuota_justa
 
-                # ── Filtro C: edge positivo sobre cuota justa ────────
                 if edge < CFG.value_threshold:
                     log.debug(f"{jugador}: edge {round(edge,3)} < umbral {CFG.value_threshold}")
                     continue
@@ -843,6 +799,7 @@ class BotTenis:
             log.error(f"Error analizando {p.get('jugador_a')} vs {p.get('jugador_b')}: {e}")
 
     def run(self):
+        self._picks_enviados = 0  # Resetear contador en cada ejecución
         manana = fecha_manana_local()
         log.info(f"🎾 BOT TENIS IA v7.0 — Análisis escalera para {manana}")
 
@@ -861,7 +818,6 @@ class BotTenis:
             log.warning(f"0 en rango escalera (mañana={total_manana}, fuera_rango={fuera_rango})")
             return
 
-        # Mensaje de inicio con diagnóstico completo
         inicio = (
             f"🎾 *BOT TENIS IA v7.0 — ESCALERA*\n"
             f"━━━━━━━━━━━━━━━━━━━\n"
@@ -877,7 +833,6 @@ class BotTenis:
             self.analizar_partido(p)
             time.sleep(CFG.rate_limit_delay)
 
-        # Resumen final
         resumen = (
             f"✅ *ANÁLISIS COMPLETADO*\n"
             f"━━━━━━━━━━━━━━━━━━━\n"
@@ -892,10 +847,21 @@ class BotTenis:
         self.telegram.enviar(resumen)
         log.info(f"✅ Análisis completado — {self._picks_enviados} picks enviados")
 
+
 # ============================================================
-# MAIN
+# MAIN — LOOP INFINITO CON SCHEDULE PARA RENDER
 # ============================================================
 
 if __name__ == "__main__":
-    BotTenis().run()
-            
+    bot = BotTenis()
+
+    # Corre todos los días a las 10:00 PM hora Colombia
+    schedule.every().day.at("22:00").do(bot.run)
+
+    log.info("🎾 Bot Tenis iniciado — corriendo todos los días a las 22:00 (Colombia)")
+    log.info(f"⏳ Próxima ejecución: {schedule.next_run()}")
+
+    # Loop infinito — mantiene el proceso vivo en Render
+    while True:
+        schedule.run_pending()
+        time.sleep(60)
